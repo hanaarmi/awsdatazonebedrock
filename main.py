@@ -264,8 +264,8 @@ class DataZoneManager:
 
 def main():
     # 설정값
-    DOMAIN_ID = 'dzd_brmpgriuef9es8'
-    ASSET_ID = 'cclm9ky03uwl5k'
+    DOMAIN_ID = '[Input your domain id]'
+    ASSET_ID = '[Input your asset id]'
 
     # 스키마 설명 파일 읽기
     try:
