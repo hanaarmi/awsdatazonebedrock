@@ -5,23 +5,25 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# .env 파일에서 환경 변수 로드
 load_dotenv()
 
 
 class DataZoneManager:
     def __init__(self, domain_id: str):
-        # Get credentials from environment variables
+        # 환경 변수에서 리전 정보 가져오기
         region_datazone = os.getenv('AWS_DATAZONE_REGION', 'ap-northeast-2')
         region_bedrock = os.getenv('AWS_BEDROCK_REGION', 'us-west-2')
 
-        # Initialize clients with environment variables
+        # AWS 클라이언트 초기화
+        # DataZone 클라이언트 설정
         self.client = boto3.client('datazone',
                                    region_name=region_datazone,
                                    aws_access_key_id=os.getenv(
                                        'AWS_ACCESS_KEY_ID'),
                                    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'))
 
+        # Bedrock 클라이언트 설정 (AI 모델 사용을 위함)
         self.bedrock = boto3.client('bedrock-runtime',
                                     region_name=region_bedrock,
                                     aws_access_key_id=os.getenv(
@@ -29,11 +31,11 @@ class DataZoneManager:
                                     aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'))
 
         self.domain_id = domain_id
-        # Initialize form type revisions
+        # 폼 타입 리비전 초기화
         self.form_type_revisions = self._get_form_type_revisions()
 
     def _get_form_type_revisions(self) -> Dict[str, str]:
-        """Get latest revision numbers for form types"""
+        """폼 타입의 최신 리비전 번호를 가져오는 메서드"""
         try:
             revisions = {}
             # Get GlueTableFormType revision
@@ -64,7 +66,7 @@ class DataZoneManager:
 
     def get_latest_asset_content(self, domain_id: str, asset_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get the latest content of an asset from DataZone including both table structure and metadata
+        DataZone에서 테이블 구조와 메타데이터를 포함한 최신 에셋 내용을 가져오는 메서드
         """
         try:
             response = self.client.get_asset(
@@ -75,7 +77,9 @@ class DataZoneManager:
             glue_table_content = None
             column_metadata_content = None
 
-            # 각 form의 content 가져오기
+            # 각 폼의 내용 가져오기
+            # GlueTableForm: 테이블의 기본 구조 정보
+            # ColumnBusinessMetadataForm: 컬럼의 비즈니스 메타데이터 정보
             for form in response['formsOutput']:
                 if form['formName'] == 'GlueTableForm':
                     glue_table_content = json.loads(form['content'])
@@ -85,17 +89,18 @@ class DataZoneManager:
             if not glue_table_content or not column_metadata_content:
                 return None
 
-            # 메타데이터 정보를 컬럼 정보와 합치기
+            # 메타데이터 정보를 컬럼별로 정리하여 딕셔너리 생성
             metadata_by_column = {
                 meta['columnIdentifier']: meta
                 for meta in column_metadata_content['columnsBusinessMetadata']
             }
 
-            # 컬럼 정보 업데이트
+            # 각 컬럼에 대한 메타데이터 정보 업데이트
             for column in glue_table_content['columns']:
                 column_name = column['columnName']
                 if column_name in metadata_by_column:
                     metadata = metadata_by_column[column_name]
+                    # 설명과 비즈니스 이름 추가
                     column['description'] = metadata.get('description')
                     column['businessName'] = metadata.get('name')
 
@@ -105,7 +110,7 @@ class DataZoneManager:
             }
 
         except Exception as e:
-            print(f"Error getting asset: {str(e)}")
+            print(f"에셋 정보 가져오기 실패: {str(e)}")
             return None
 
     def create_asset_revision(
@@ -115,49 +120,50 @@ class DataZoneManager:
         modified_content: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """
-        Create a new revision of an asset with modified content
+        수정된 내용으로 에셋의 새로운 리비전을 생성하는 메서드
         """
         try:
             glue_table_content = modified_content['glueTableContent']
             column_metadata_content = modified_content['columnMetadataContent']
 
-            # GlueTableForm에서는 dataType과 columnName만 유지
-            columns_metadata = {}  # Store original metadata
+            # 컬럼 메타데이터 임시 저장
+            # GlueTableForm에는 기본 정보만 남기고 메타데이터는 별도로 관리
+            columns_metadata = {}
             for column in glue_table_content['columns']:
-                # Store metadata before removing
+                # 메타데이터 정보 임시 저장
                 columns_metadata[column['columnName']] = {
-                    # Use columnName as default
                     'businessName': column.get('businessName', column['columnName']),
                     'description': column.get('description', '')
                 }
-                # Remove from GlueTableForm
+                # GlueTableForm에서 메타데이터 필드 제거
                 if 'businessName' in column:
                     del column['businessName']
                 if 'description' in column:
                     del column['description']
 
-            # 메타데이터 업데이트 (ColumnBusinessMetadataForm)
+            # ColumnBusinessMetadataForm 업데이트
             updated_metadata = []
             for column in glue_table_content['columns']:
                 column_name = column['columnName']
                 metadata = columns_metadata[column_name]
                 metadata_entry = {
                     'columnIdentifier': column_name,
-                    # Use stored businessName
                     'name': metadata['businessName'],
                     'description': metadata['description'] if metadata['description'] is not None else ''
                 }
                 updated_metadata.append(metadata_entry)
 
-            print("\nVerifying metadata before API call:")
+            print("\n메타데이터 검증:")
             print(json.dumps(updated_metadata, indent=2))
 
+            # 메타데이터 컨텐츠 업데이트
             column_metadata_content['columnsBusinessMetadata'] = updated_metadata
 
-            # Generate revision name with timestamp
+            # 타임스탬프를 포함한 리비전 이름 생성
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            revision_name = f"Made by script - {current_time}"
+            revision_name = f"스크립트 생성 - {current_time}"
 
+            # API 호출을 위한 폼 입력 데이터 준비
             forms_input = [
                 {
                     'content': json.dumps(glue_table_content),
@@ -173,6 +179,7 @@ class DataZoneManager:
                 }
             ]
 
+            # 새로운 리비전 생성
             response = self.client.create_asset_revision(
                 domainIdentifier=domain_id,
                 identifier=asset_id,
@@ -180,20 +187,20 @@ class DataZoneManager:
                 name=revision_name
             )
 
-            print(f"Successfully created new revision: {
-                  response['revision']} with name: {revision_name}")
+            print(f"새로운 리비전 생성 완료: {
+                  response['revision']}, 이름: {revision_name}")
             return response
 
         except Exception as e:
-            print(f"Error creating asset revision: {str(e)}")
+            print(f"에셋 리비전 생성 실패: {str(e)}")
             return None
 
     def generate_column_metadata(self, column_name: str, context: str) -> Dict[str, str]:
         """
-        Generate business name and description for a column using Bedrock
+        Bedrock AI 모델을 사용하여 컬럼의 비즈니스 이름과 설명을 생성하는 메서드
         """
         try:
-            # Create prompt message
+            # 프롬프트 메시지 생성
             prompt = f"""Given the following column name and context, generate a business-friendly name and description:
             Column Name: {column_name}
             Context: {context}
@@ -204,7 +211,7 @@ class DataZoneManager:
                 "description": "detailed description"
             }}"""
 
-            # Prepare request body
+            # Bedrock 요청 본문 준비
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": 100,
@@ -216,7 +223,7 @@ class DataZoneManager:
                 ]
             }
 
-            # Invoke model
+            # AI 모델 호출
             response = self.bedrock.invoke_model(
                 modelId=os.getenv('BEDROCK_MODEL_ID'),
                 body=json.dumps(body),
@@ -224,15 +231,16 @@ class DataZoneManager:
                 contentType="application/json"
             )
 
-            # Process response
+            # 응답 처리
             response_body = json.loads(response['body'].read())
 
+            # AI 모델 응답에서 JSON 형식의 결과 추출
             if ('content' in response_body and
                 isinstance(response_body['content'], list) and
                 len(response_body['content']) > 0 and
                     'text' in response_body['content'][0]):
                 response_text = response_body['content'][0]['text']
-                # Find the JSON part in the response
+                # 응답에서 JSON 부분 찾기
                 json_start = response_text.find('{')
                 json_end = response_text.rfind('}') + 1
                 if json_start >= 0 and json_end > json_start:
@@ -240,13 +248,14 @@ class DataZoneManager:
                     generated_content = json.loads(json_str)
                     return generated_content
 
+            # AI 모델 응답 실패시 기본값 반환
             return {
                 "businessName": column_name,
                 "description": ""
             }
 
         except Exception as e:
-            print(f"Error generating metadata: {str(e)}")
+            print(f"메타데이터 생성 중 오류 발생: {str(e)}")
             return {
                 "businessName": column_name,
                 "description": ""
@@ -254,53 +263,53 @@ class DataZoneManager:
 
 
 def main():
-    # Configuration
+    # 설정값
     DOMAIN_ID = 'dzd_brmpgriuef9es8'
     ASSET_ID = 'cclm9ky03uwl5k'
 
-    # Read schema description file
+    # 스키마 설명 파일 읽기
     try:
         with open('schemadesc.txt', 'r', encoding='utf-8') as f:
             schema_context = f.read()
     except Exception as e:
-        print(f"Error reading schema description: {str(e)}")
+        print(f"스키마 설명 파일 읽기 실패: {str(e)}")
         return
 
-    # Initialize DataZone manager
+    # DataZone 매니저 초기화
     dzm = DataZoneManager(domain_id=DOMAIN_ID)
 
-    # Get latest content
+    # 최신 에셋 내용 가져오기
     content = dzm.get_latest_asset_content(DOMAIN_ID, ASSET_ID)
 
     if content:
         glue_content = content['glueTableContent']
 
-        # Update metadata for each column
+        # 각 컬럼에 대한 메타데이터 업데이트
         for column in glue_content['columns']:
-            print(f"\nProcessing column: {column['columnName']}")
+            print(f"\n컬럼 처리 중: {column['columnName']}")
 
-            # Generate metadata using Bedrock
+            # Bedrock을 사용하여 메타데이터 생성
             metadata = dzm.generate_column_metadata(
                 column['columnName'],
                 schema_context
             )
 
-            # Update column metadata
+            # 컬럼 메타데이터 업데이트
             column['businessName'] = metadata['businessName']
             column['description'] = metadata['description']
 
-            print(f"Generated metadata: {json.dumps(
+            print(f"생성된 메타데이터: {json.dumps(
                 metadata, indent=2, ensure_ascii=False)}")
 
-        # Create new revision
+        # 새로운 리비전 생성
         result = dzm.create_asset_revision(DOMAIN_ID, ASSET_ID, content)
 
         if result:
-            print("Successfully updated all column metadata")
+            print("모든 컬럼 메타데이터 업데이트 완료")
         else:
-            print("Failed to create new revision")
+            print("새로운 리비전 생성 실패")
     else:
-        print("Failed to get asset content")
+        print("에셋 내용 가져오기 실패")
 
 
 if __name__ == "__main__":
